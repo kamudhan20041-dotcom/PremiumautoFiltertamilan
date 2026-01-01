@@ -13,12 +13,10 @@ from pyrogram import enums
 from typing import Union
 import re
 import os
-from datetime import datetime
-from typing import List
 from database.users_chats_db import db
 from bs4 import BeautifulSoup
-import requests
 import aiohttp
+import functools
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -27,6 +25,7 @@ BTN_URL_REGEX = re.compile(
     r"(\[([^\[]+?)\]\((buttonurl|buttonalert):(?:/{0,2})(.+?)(:same)?\))"
 )
 
+# Initialize Cinemagoer (IMDb)
 imdb = Cinemagoer() 
 
 BANNED = {}
@@ -34,7 +33,7 @@ SMART_OPEN = '“'
 SMART_CLOSE = '”'
 START_CHAR = ('\'', '"', SMART_OPEN)
 
-# temp db for banned 
+# Temp storage
 class temp(object):
     BANNED_USERS = []
     BANNED_CHATS = []
@@ -56,14 +55,17 @@ async def is_subscribed(bot, query):
     else:
         if user.status != enums.ChatMemberStatus.BANNED:
             return True
-
     return False
 
-async def get_poster(query, bulk=False, id=False, file=None):
+# --- FIXED: IMDb Logic (Non-Blocking) ---
+
+# 1. The Sync worker (does the heavy lifting)
+def get_poster_sync(query, bulk=False, id=False, file=None):
     if not id:
         query = (query.strip()).lower()
         title = query
-        year = re.findall(r'[1-2]\d{3}$', query, re.IGNORECASE)
+        # Fixed Regex: Removed '$' to find year anywhere in filename
+        year = re.findall(r'[1-2]\d{3}', query, re.IGNORECASE)
         if year:
             year = list_to_str(year[:1])
             title = (query.replace(year, "")).strip()
@@ -73,37 +75,63 @@ async def get_poster(query, bulk=False, id=False, file=None):
                 year = list_to_str(year[:1]) 
         else:
             year = None
-        movieid = imdb.search_movie(title.lower(), results=10)
+        
+        try:
+            movieid = imdb.search_movie(title.lower(), results=10)
+        except Exception as e:
+            logger.error(f"IMDb Search Error: {e}")
+            return None
+
         if not movieid:
             return None
+            
         if year:
-            filtered=list(filter(lambda k: str(k.get('year')) == str(year), movieid))
+            filtered = list(filter(lambda k: str(k.get('year')) == str(year), movieid))
             if not filtered:
                 filtered = movieid
         else:
             filtered = movieid
-        movieid=list(filter(lambda k: k.get('kind') in ['movie', 'tv series'], filtered))
+            
+        movieid = list(filter(lambda k: k.get('kind') in ['movie', 'tv series'], filtered))
+        
+        # Crash Fix: Handle empty list before accessing index [0]
         if not movieid:
             movieid = filtered
+            
+        if not movieid: # If still empty after fallback
+            return None
+            
         if bulk:
             return movieid
+            
         movieid = movieid[0].movieID
     else:
         movieid = query
-    movie = imdb.get_movie(movieid)
+
+    try:
+        movie = imdb.get_movie(movieid)
+    except Exception as e:
+        logger.error(f"IMDb Get Movie Error: {e}")
+        return None
+
     if movie.get("original air date"):
         date = movie["original air date"]
     elif movie.get("year"):
         date = movie.get("year")
     else:
         date = "N/A"
+        
     plot = ""
-    if not LONG_IMDB_DESCRIPTION:
+    # Safe check for Info variables
+    is_long = globals().get('LONG_IMDB_DESCRIPTION', False)
+    
+    if not is_long:
         plot = movie.get('plot')
         if plot and len(plot) > 0:
             plot = plot[0]
     else:
         plot = movie.get('plot outline')
+        
     if plot and len(plot) > 800:
         plot = plot[0:800] + "..."
 
@@ -137,6 +165,14 @@ async def get_poster(query, bulk=False, id=False, file=None):
         'url':f'https://www.imdb.com/title/tt{movieid}'
     }
 
+# 2. The Async Wrapper (This prevents the bot from freezing)
+async def get_poster(query, bulk=False, id=False, file=None):
+    loop = asyncio.get_running_loop()
+    # Runs the sync function in a separate thread
+    return await loop.run_in_executor(None, get_poster_sync, query, bulk, id, file)
+
+# ----------------------------------------------
+
 async def broadcast_messages(user_id, message):
     try:
         await message.copy(chat_id=user_id)
@@ -165,26 +201,35 @@ async def broadcast_messages_group(chat_id, message):
             await kd.pin()
         except:
             pass
-        return True, "Succes"
+        return True, "Success"
     except FloodWait as e:
         await asyncio.sleep(e.x)
         return await broadcast_messages_group(chat_id, message)
     except Exception as e:
         return False, "Error"
 
+# --- FIXED: Google Search (Use aiohttp instead of requests) ---
 async def search_gagala(text):
-    usr_agent = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) '
-        'Chrome/61.0.3163.100 Safari/537.36'
-        }
     text = text.replace(" ", '+')
     url = f'https://www.google.com/search?q={text}'
-    response = requests.get(url, headers=usr_agent)
-    response.raise_for_status()
-    soup = BeautifulSoup(response.text, 'html.parser')
-    titles = soup.find_all( 'h3' )
-    return [title.getText() for title in titles]
-
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/61.0.3163.100 Safari/537.36'
+    }
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers) as response:
+                if response.status != 200:
+                    return []
+                html = await response.text()
+                
+        soup = BeautifulSoup(html, 'html.parser')
+        titles = soup.find_all('h3')
+        return [title.getText() for title in titles]
+    except Exception as e:
+        logger.error(f"Google Search Error: {e}")
+        return []
+# ------------------------------------------------------------
 
 async def get_settings(group_id):
     settings = temp.SETTINGS.get(group_id)
@@ -201,7 +246,6 @@ async def save_group_settings(group_id, key, value):
     
 def get_size(size):
     """Get size in readable format"""
-
     units = ["Bytes", "KB", "MB", "GB", "TB", "PB", "EB"]
     size = float(size)
     i = 0
@@ -250,7 +294,6 @@ def extract_user(message: Message) -> Union[int, str]:
             user_first_name = required_entity.user.first_name
         else:
             user_id = message.command[1]
-            # don't want to make a request -_-
             user_first_name = user_id
         try:
             user_id = int(user_id)
@@ -266,8 +309,12 @@ def list_to_str(k):
         return "N/A"
     elif len(k) == 1:
         return str(k[0])
-    elif MAX_LIST_ELM:
-        k = k[:int(MAX_LIST_ELM)]
+    
+    # Safe check for MAX_LIST_ELM
+    max_elm = globals().get('MAX_LIST_ELM', None)
+    
+    if max_elm:
+        k = k[:int(max_elm)]
         return ' '.join(f'{elem}, ' for elem in k)
     else:
         return ' '.join(f'{elem}, ' for elem in k)
@@ -294,7 +341,7 @@ def last_online(from_user):
 def split_quotes(text: str) -> List:
     if not any(text.startswith(char) for char in START_CHAR):
         return text.split(None, 1)
-    counter = 1  # ignore first char -> is some kind of quote
+    counter = 1 
     while counter < len(text):
         if text[counter] == "\\":
             counter += 1
@@ -304,9 +351,7 @@ def split_quotes(text: str) -> List:
     else:
         return text.split(None, 1)
 
-    # 1 to avoid starting quote, and counter is exclusive so avoids ending
     key = remove_escapes(text[1:counter].strip())
-    # index will be in range, or `else` would have been executed and returned
     rest = text[counter + 1:].strip()
     if not key:
         key = text[0] + text[0]
@@ -321,19 +366,16 @@ def gfilterparser(text, keyword):
     i = 0
     alerts = []
     for match in BTN_URL_REGEX.finditer(text):
-        # Check if btnurl is escaped
         n_escapes = 0
         to_check = match.start(1) - 1
         while to_check > 0 and text[to_check] == "\\":
             n_escapes += 1
             to_check -= 1
 
-        # if even, not escaped -> create button
         if n_escapes % 2 == 0:
             note_data += text[prev:match.start(1)]
             prev = match.end(1)
             if match.group(3) == "buttonalert":
-                # create a thruple with button label, url, and newline status
                 if bool(match.group(5)) and buttons:
                     buttons[-1].append(InlineKeyboardButton(
                         text=match.group(2),
@@ -377,19 +419,16 @@ def parser(text, keyword):
     i = 0
     alerts = []
     for match in BTN_URL_REGEX.finditer(text):
-        # Check if btnurl is escaped
         n_escapes = 0
         to_check = match.start(1) - 1
         while to_check > 0 and text[to_check] == "\\":
             n_escapes += 1
             to_check -= 1
 
-        # if even, not escaped -> create button
         if n_escapes % 2 == 0:
             note_data += text[prev:match.start(1)]
             prev = match.end(1)
             if match.group(3) == "buttonalert":
-                # create a thruple with button label, url, and newline status
                 if bool(match.group(5)) and buttons:
                     buttons[-1].append(InlineKeyboardButton(
                         text=match.group(2),
@@ -437,7 +476,6 @@ def remove_escapes(text: str) -> str:
             res += text[counter]
     return res
 
-
 def humanbytes(size):
     if not size:
         return ""
@@ -451,14 +489,15 @@ def humanbytes(size):
 
 
 async def get_shortlink(link):
-    https = link.split(":")[0]
-    if "http" == https:
-        https = "https"
-        link = link.replace("http", https)
-    url = f'https://{SHORTNER_SITE}/api'
-    params = {'api': SHORTNER_API,
-              'url': link,
-              }
+    if link.startswith("http://"):
+        link = link.replace("http://", "https://", 1)
+        
+    # Check if variables exist in info.py safe-guard
+    site = globals().get('SHORTNER_SITE', 'bit.ly')
+    api_key = globals().get('SHORTNER_API', '')
+    
+    url = f'https://{site}/api'
+    params = {'api': api_key, 'url': link}
 
     try:
         async with aiohttp.ClientSession() as session:
@@ -468,8 +507,8 @@ async def get_shortlink(link):
                     return data['shortenedUrl']
                 else:
                     logger.error(f"Error: {data['message']}")
-                    return f'https://{SHORTNER_SITE}/api?api={SHORTNER_API}&link={link}'
+                    return f'https://{site}/api?api={api_key}&link={link}'
 
     except Exception as e:
         logger.error(e)
-        return f'{SHORTNER_SITE}/api?api={SHORTNER_API}&link={link}'
+        return f'{site}/api?api={api_key}&link={link}'
