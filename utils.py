@@ -10,7 +10,7 @@ import random
 import asyncio
 from pyrogram.types import Message, InlineKeyboardButton
 from pyrogram import enums
-from typing import Union
+from typing import Union, List, Optional
 import re
 import os
 from database.users_chats_db import db
@@ -38,7 +38,7 @@ class temp(object):
     BANNED_USERS = []
     BANNED_CHATS = []
     ME = None
-    CURRENT=int(os.environ.get("SKIP", 2))
+    CURRENT = int(os.environ.get("SKIP", 2))
     CANCEL = False
     MELCOW = {}
     U_NAME = None
@@ -64,7 +64,7 @@ def get_poster_sync(query, bulk=False, id=False, file=None):
     if not id:
         query = (query.strip()).lower()
         title = query
-        # Fixed Regex: Removed '$' to find year anywhere in filename
+        # Fixed Regex to find year anywhere in filename
         year = re.findall(r'[1-2]\d{3}', query, re.IGNORECASE)
         if year:
             year = list_to_str(year[:1])
@@ -114,12 +114,13 @@ def get_poster_sync(query, bulk=False, id=False, file=None):
         logger.error(f"IMDb Get Movie Error: {e}")
         return None
 
+    # FIXED: Renamed variable 'date' to 'r_date' to avoid conflict with 'datetime.date' import
     if movie.get("original air date"):
-        date = movie["original air date"]
+        r_date = movie["original air date"]
     elif movie.get("year"):
-        date = movie.get("year")
+        r_date = movie.get("year")
     else:
-        date = "N/A"
+        r_date = "N/A"
         
     plot = ""
     # Safe check for Info variables
@@ -156,7 +157,7 @@ def get_poster_sync(query, bulk=False, id=False, file=None):
         "cinematographer":list_to_str(movie.get("cinematographer")),
         "music_team": list_to_str(movie.get("music department")),
         "distributors": list_to_str(movie.get("distributors")),
-        'release_date': date,
+        'release_date': r_date,
         'year': movie.get('year'),
         'genres': list_to_str(movie.get("genres")),
         'poster': movie.get('full-size cover url'),
@@ -208,12 +209,13 @@ async def broadcast_messages_group(chat_id, message):
     except Exception as e:
         return False, "Error"
 
-# --- FIXED: Google Search (Use aiohttp instead of requests) ---
+# --- FIXED: Google Search (Updated Headers & Aiohttp) ---
 async def search_gagala(text):
     text = text.replace(" ", '+')
     url = f'https://www.google.com/search?q={text}'
+    # Updated Headers to avoid 403 Forbidden
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/61.0.3163.100 Safari/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
     }
     
     try:
@@ -314,10 +316,12 @@ def list_to_str(k):
     max_elm = globals().get('MAX_LIST_ELM', None)
     
     if max_elm:
-        k = k[:int(max_elm)]
-        return ' '.join(f'{elem}, ' for elem in k)
-    else:
-        return ' '.join(f'{elem}, ' for elem in k)
+        try:
+            k = k[:int(max_elm)]
+        except:
+            pass
+    
+    return ' '.join(f'{elem}, ' for elem in k)
 
 def last_online(from_user):
     time = ""
@@ -487,7 +491,6 @@ def humanbytes(size):
         n += 1
     return str(round(size, 2)) + " " + Dic_powerN[n] + 'B' 
 
-
 async def get_shortlink(link):
     if link.startswith("http://"):
         link = link.replace("http://", "https://", 1)
@@ -510,5 +513,6 @@ async def get_shortlink(link):
                     return f'https://{site}/api?api={api_key}&link={link}'
 
     except Exception as e:
-        logger.error(e)
-        return f'{site}/api?api={api_key}&link={link}'
+        logger.error(f"Shortlink Error: {e}")
+        # FIXED: Ensure fallback has https://
+        return f'https://{site}/api?api={api_key}&link={link}'
