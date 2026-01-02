@@ -50,27 +50,27 @@ class Bot(Client):
             api_id=API_ID,
             api_hash=API_HASH,
             bot_token=BOT_TOKEN,
-            workers=100, # Optimized for high-traffic
+            workers=100, 
             plugins={"root": "plugins"},
             sleep_threshold=10,
         )
 
     async def start(self):
-        # 1. Load Ban List
         b_users, b_chats = await db.get_banned()
         temp.BANNED_USERS = b_users
         temp.BANNED_CHATS = b_chats
         
-        # 2. Start Pyrogram Client
         await super().start()
         
-        # 3. Ensure Database Indexes (Critical for Speed)
+        # 🔴 THE FIX: We wrap this in a Try/Except block.
+        # If MongoDB complains about the index, we ignore it and start anyway.
         try:
             await Media.ensure_indexes()
+            logging.info("Database indexes ensured.")
         except Exception as e:
-            logging.error(f"Failed to ensure indexes: {e}")
+            logging.error(f"⚠️ Database Index Error (Ignored): {e}")
+            # We do NOT stop the bot. We just continue.
 
-        # 4. Get Bot Info
         me = await self.get_me()
         temp.ME = me.id
         temp.U_NAME = me.username
@@ -78,22 +78,20 @@ class Bot(Client):
         self.username = '@' + me.username
         logging.info(f"Bot Started as {me.username}")
         
-        # 5. Send Startup Log
         tz = pytz.timezone('Asia/Kolkata')
         today = date.today()
         now = datetime.now(tz)
         time_str = now.strftime("%H:%M:%S %p")
+        
         if LOG_CHANNEL:
             try:
                 await self.send_message(chat_id=int(LOG_CHANNEL), text=script.RESTART_TXT.format(today, time_str))
             except Exception as e:
                 logging.error(f"Log Channel Error: {e}")
             
-        # 6. Start Koyeb Web Server
         app = web.AppRunner(await web_server())
         await app.setup()
         
-        # Koyeb will dynamically assign a port or we default to 8080
         bind_address = "0.0.0.0"
         PORT_VAR = int(os.environ.get("PORT", 8080))
         
