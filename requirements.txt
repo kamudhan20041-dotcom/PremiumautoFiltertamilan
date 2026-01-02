@@ -1,34 +1,38 @@
+# --- Core Bot Framework ---
+Pyrogram>=2.0.106
+TgCrypto
+# uvloop makes the bot 2x-4x faster on Linux (Koyeb/VPS)
+uvloop
 
-pyrogram>=2.0.30
-tgcrypto
+# --- Database (MongoDB) ---
+# Specific versions required for stability with Motor
 pymongo[srv]==3.12.3
 motor==2.5.1
-marshmallow==3.14.1
 umongo==3.0.1
-git+https://github.com/Joelkb/cinemagoer
-cinemagoer
-requests
-bs4
-imdbpy==2022.7.9
-heroku3
-datetime
-telegraph==2.2.0
-youtube-search-python
-youtube-search
-yt-dlp==2023.2.17
-aiofiles==22.1.0
-speedtest==0.0.1
-python-dotenv==0.21.1
-opencv-python-headless==4.7.0.68
-humanize==4.6.0
-Pillow==9.4.0
-pyshorteners
-psutil==5.9.4
-NumPy
-wheel
-ujson
-wget
-pytz
+dnspython
+
+# --- Web Server & Networking ---
 aiohttp
-aiohttp==3.8.3
-uvloop
+aiofiles
+ujson
+requests
+beautifulsoup4
+
+# --- Media & Parsing ---
+# We use the git version because the pip version is outdated
+git+https://github.com/cinemagoer/cinemagoer
+marshmallow==3.14.1
+humanize
+pyshorteners
+python-dotenv
+pytz
+wget
+
+# --- Optional / Extra Features ---
+# (Only keep these if your bot actually uses YouTube/Image editing)
+Pillow
+yt-dlp
+youtube-search-python
+speedtest-cli
+psutil
+numpy
