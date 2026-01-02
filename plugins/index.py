@@ -5,14 +5,14 @@ from pyrogram.errors import FloodWait
 from pyrogram.errors.exceptions.bad_request_400 import ChannelInvalid, ChatAdminRequired, UsernameInvalid, UsernameNotModified
 from info import ADMINS
 from info import INDEX_REQ_CHANNEL as LOG_CHANNEL
-from database.ia_filterdb import save_file
+from database.ia_filterdb import save_file, save_file_batch  # <--- IMPORT BATCH FUNCTION
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from utils import temp
 import re
+
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 lock = asyncio.Lock()
-
 
 @Client.on_callback_query(filters.regex(r'^index'))
 async def index_files(bot, query):
@@ -134,6 +134,9 @@ async def set_skip_number(bot, message):
         await message.reply("ɢɪᴠᴇ ᴍᴇ ᴀ sᴋɪᴘ ɴᴜᴍʙᴇʀ")
 
 
+# --------------------------------------------------------------------------------------
+#  🚀 HIGH-SPEED BATCH INDEXING FUNCTION
+# --------------------------------------------------------------------------------------
 async def index_files_to_db(lst_msg_id, chat, msg, bot):
     total_files = 0
     duplicate = 0
@@ -141,21 +144,35 @@ async def index_files_to_db(lst_msg_id, chat, msg, bot):
     deleted = 0
     no_media = 0
     unsupported = 0
+    
+    # Batch Settings
+    BATCH_SIZE = 200
+    batch = []
+    
     async with lock:
         try:
             current = temp.CURRENT
             temp.CANCEL = False
+            
+            # Using your existing iterator logic
             async for message in bot.iter_messages(chat, lst_msg_id, temp.CURRENT):
                 if temp.CANCEL:
+                    # If cancelled, process whatever is in the batch and stop
+                    if batch:
+                        try:
+                            inserted = await save_file_batch(batch)
+                            total_files += inserted
+                            duplicate += (len(batch) - inserted)
+                        except Exception as e:
+                            logger.error(f"Cancel Batch Error: {e}")
+                            errors += len(batch)
+                    
                     await msg.edit(f"Successfully Cancelled!!\n\nSaved <code>{total_files}</code> files to dataBase!\nDuplicate Files Skipped: <code>{duplicate}</code>\nDeleted Messages Skipped: <code>{deleted}</code>\nNon-Media messages skipped: <code>{no_media + unsupported}</code>(Unsupported Media - `{unsupported}` )\nErrors Occurred: <code>{errors}</code>")
-                    break
+                    return
+
                 current += 1
-                if current % 20 == 0:
-                    can = [[InlineKeyboardButton('Cancel', callback_data='index_cancel')]]
-                    reply = InlineKeyboardMarkup(can)
-                    await msg.edit_text(
-                        text=f"Total messages fetched: <code>{current}</code>\nTotal messages saved: <code>{total_files}</code>\nDuplicate Files Skipped: <code>{duplicate}</code>\nDeleted Messages Skipped: <code>{deleted}</code>\nNon-Media messages skipped: <code>{no_media + unsupported}</code>(Unsupported Media - `{unsupported}` )\nErrors Occurred: <code>{errors}</code>",
-                        reply_markup=reply)
+                
+                # --- Message Validation ---
                 if message.empty:
                     deleted += 1
                     continue
@@ -165,21 +182,55 @@ async def index_files_to_db(lst_msg_id, chat, msg, bot):
                 elif message.media not in [enums.MessageMediaType.VIDEO, enums.MessageMediaType.AUDIO, enums.MessageMediaType.DOCUMENT]:
                     unsupported += 1
                     continue
+                
                 media = getattr(message, message.media.value, None)
                 if not media:
                     unsupported += 1
                     continue
+                
+                # --- Prepare Media for Batch ---
                 media.file_type = message.media.value
                 media.caption = message.caption
-                aynav, vnay = await save_file(media)
-                if aynav:
-                    total_files += 1
-                elif vnay == 0:
-                    duplicate += 1
-                elif vnay == 2:
-                    errors += 1
+                
+                batch.append(media)
+
+                # --- Process Batch when full (200 items) ---
+                if len(batch) >= BATCH_SIZE:
+                    try:
+                        inserted = await save_file_batch(batch)
+                        total_files += inserted
+                        duplicate += (len(batch) - inserted)
+                    except Exception as e:
+                        logger.error(f"Batch Save Error: {e}")
+                        errors += len(batch)
+                    
+                    batch = [] # Clear the batch
+                    
+                    # Update status message (Every 200 files)
+                    can = [[InlineKeyboardButton('Cancel', callback_data='index_cancel')]]
+                    reply = InlineKeyboardMarkup(can)
+                    try:
+                        await msg.edit_text(
+                            text=f"⚡ Fast Indexing...\n\nTotal Fetched: <code>{current}</code>\nSaved: <code>{total_files}</code>\nDuplicate: <code>{duplicate}</code>\nDeleted: <code>{deleted}</code>\nSkipped: <code>{no_media + unsupported}</code>\nErrors: <code>{errors}</code>",
+                            reply_markup=reply
+                        )
+                    except FloodWait as e:
+                        await asyncio.sleep(e.value)
+                    except Exception:
+                        pass
+            
+            # --- End of Loop: Save remaining files ---
+            if batch:
+                try:
+                    inserted = await save_file_batch(batch)
+                    total_files += inserted
+                    duplicate += (len(batch) - inserted)
+                except Exception as e:
+                    logger.error(f"Final Batch Error: {e}")
+                    errors += len(batch)
+
         except Exception as e:
             logger.exception(e)
             await msg.edit(f'Error: {e}')
         else:
-            await msg.edit(f'Succesfully saved <code>{total_files}</code> to dataBase!\nDuplicate Files Skipped: <code>{duplicate}</code>\nDeleted Messages Skipped: <code>{deleted}</code>\nNon-Media messages skipped: <code>{no_media + unsupported}</code>(Unsupported Media - `{unsupported}` )\nErrors Occurred: <code>{errors}</code>')
+            await msg.edit(f'✅ **Indexing Completed!**\n\nSaved <code>{total_files}</code> to dataBase!\nDuplicate Files Skipped: <code>{duplicate}</code>\nDeleted Messages Skipped: <code>{deleted}</code>\nNon-Media messages skipped: <code>{no_media + unsupported}</code>\nErrors Occurred: <code>{errors}</code>')
