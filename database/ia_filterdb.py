@@ -3,7 +3,7 @@ from struct import pack
 import re
 import base64
 from pyrogram.file_id import FileId
-from pymongo.errors import DuplicateKeyError
+from pymongo.errors import DuplicateKeyError, BulkWriteError
 from umongo import Instance, Document, fields
 from motor.motor_asyncio import AsyncIOMotorClient
 from marshmallow.exceptions import ValidationError
@@ -64,6 +64,50 @@ async def save_file(media):
         else:
             logger.info(f'{getattr(media, "file_name", "NO_FILE")} is saved to database')
             return True, 1
+
+# -------------------------------------------------------------------
+#  ✅ NEW: Batch Save Function for Fast Indexing
+# -------------------------------------------------------------------
+async def save_file_batch(items):
+    """
+    Saves a list of media objects to the database in one go.
+    Optimized for high-speed indexing.
+    """
+    data_list = []
+    
+    for media in items:
+        # Logic copied from save_file to process data
+        file_id, file_ref = unpack_new_file_id(media.file_id)
+        file_name = re.sub(r"(_|\-|\.|\+)", " ", str(media.file_name))
+        
+        # Prepare the document as a raw dictionary
+        # We use raw dicts because it's faster than creating Objects
+        doc = {
+            "_id": file_id, # Using file_id as the unique key
+            "file_ref": file_ref,
+            "file_name": file_name,
+            "file_size": media.file_size,
+            "file_type": media.file_type,
+            "mime_type": media.mime_type,
+            "caption": media.caption.html if media.caption else None,
+        }
+        data_list.append(doc)
+
+    if not data_list:
+        return 0
+
+    try:
+        # ordered=False is CRITICAL. 
+        # It means: "If one file is a duplicate, skip it and KEEP SAVING the others."
+        result = await Media.collection.insert_many(data_list, ordered=False)
+        return len(result.inserted_ids)
+    except BulkWriteError as e:
+        # If duplicates exist, MongoDB raises a BulkWriteError.
+        # We extract 'nInserted' to know how many new files were actually saved.
+        return e.details['nInserted']
+    except Exception as e:
+        logger.error(f"Batch save error: {e}")
+        return 0
 
 
 async def get_search_results(query, file_type=None, max_results=7, offset=0, filter=False):
