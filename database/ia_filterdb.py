@@ -27,8 +27,10 @@ class Media(Document):
     caption = fields.StrField(allow_none=True)
 
     class Meta:
-        # We keep this generic. Your Atlas Index handles the actual text search.
-        indexes = ('$file_name', )
+        # 🔴 FIX: We commented this out to prevent the "IndexOptionsConflict" error.
+        # Your bot will now use the existing index you created in MongoDB Atlas.
+        # indexes = ('$file_name', )
+        
         collection_name = COLLECTION_NAME
 
 
